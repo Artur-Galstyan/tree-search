@@ -35,8 +35,8 @@ class Node:
 
     def __repr__(self) -> str:
         return (
-            f"[Index: {self.index}"
-            f"Parent: {self.parent.index if self.parent is not None else None}"
+            f"[Index: {self.index} "
+            f"Parent: {self.parent.index if self.parent is not None else None} "
             f"Value: {np.round(self.value, 2)}, Visits: {self.visits}]"
         )
 
@@ -140,16 +140,20 @@ def backpropagate(leaf_node: Node) -> None:
         value: float
 
     def _backpropagate(state: BackpropagationState) -> BackpropagationState:
+        print(state)
         parent = state.node.parent
         assert parent is not None
 
         leaf_value = state.node.reward + state.node.discount * state.value
+        print(f"Leaf value: {leaf_value}")
         parent_value = (parent.value * parent.visits + leaf_value) / (
             parent.visits + 1.0
         )
+        print(f"Parent value: {parent_value}")
 
         parent.value = parent_value
         parent.visits += 1
+        print(f"Parent visits: {parent.visits}")
 
         return BackpropagationState(node=parent, value=leaf_value)
 

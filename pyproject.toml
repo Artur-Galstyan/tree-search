@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "~=3.10"
 authors = [{ name = "Artur A. Galstyan", email = "mail@arturgalstyan.dev" }]
 dependencies = [
+    "numpy",
     "beartype",
     "pre-commit"
 ]
