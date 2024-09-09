@@ -1,6 +1,10 @@
 import functools
 
+import matplotlib
+import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
+from matplotlib.patches import FancyArrowPatch
 from tree_search import (
     Action,
     backpropagate,
@@ -11,6 +15,61 @@ from tree_search import (
     StepFnReturn,
 )
 from tree_search._src.mcts import ActionSelectionInput, ActionSelectionReturn
+
+
+def fixed_layout(G):
+    layout = {
+        0: (1.5, 2),  # Root node
+        1: (0.5, 1),  # Left child of root
+        2: (2.5, 1),  # Right child of root
+        3: (1.75, 0),  # Left child of left child of root
+        4: (1, 0),  # Right child of left child of root
+        5: (2.75, 0),  # Left child of right child of root
+        6: (0, 0),  # Right child of right child of root
+    }
+    return {node: layout[node.index] for node in G.nodes()}
+
+
+def render(root_node: Node, message) -> None:
+    graph = nx.MultiDiGraph()
+
+    def _render(node: Node) -> None:
+        for action, child in node.child_nodes.items():
+            graph.add_node(child)
+            graph.add_edge(node, child, action=action)
+            _render(child)
+
+    graph.add_node(root_node)
+    _render(root_node)
+
+    pos = fixed_layout(graph)
+
+    nx.draw(
+        graph,
+        pos=pos,
+        with_labels=False,  # Changed to False to use custom labels
+        node_size=5000,
+        linewidths=0.5,
+        node_color="none",
+        edgecolors="black",
+        arrows=True,
+        connectionstyle="arc3,rad=0.1",  # Slight curve to reduce overlap
+    )
+    # Add custom labels
+    labels = {
+        node: f"I: {node.index}\nP: {node.parent.index if node.parent else 'None'}\nVI: {node.value:.2f}\nVs: {node.visits}"
+        for node in graph.nodes()
+    }
+
+    nx.draw_networkx_labels(graph, pos, labels, font_size=8)
+    plt.axis("off")
+
+    plt.text(1.2, 0.90, message, fontsize=12, fontweight="bold", color="black")
+    # set start zoom to be zoomed out
+    plt.xlim(0, 3)
+    plt.ylim(-1, 3)
+
+    plt.show()
 
 
 def counter():
@@ -127,7 +186,7 @@ def main():
     max_depth = 2
     n_actions = 2
 
-    n_iterations = 10
+    n_iterations = 1000
 
     inner_simulation_fn_partial = functools.partial(
         inner_simulation_fn, n_actions=n_actions
@@ -141,28 +200,30 @@ def main():
             max_depth=max_depth,
             action_selection_fn=inner_simulation_fn_partial,
         )
+
         leaf_node = expansion(
             sim_out.node_to_expand,
             sim_out.action_to_use,
             step_fn=step_fn_partial,
-            next_node_index=increment(),
+            next_node_index=increment()
+            if sim_out.action_to_use not in sim_out.node_to_expand.child_nodes
+            else 0,
         )
-        print("\n")
+
         backpropagate(leaf_node)
-        print("\n")
 
     node = root_node
     env.reset()
-    # print(f"{node=}")
-    # while True:
-    #     best_action = max(node.child_nodes, key=lambda x: node.child_nodes[x].value)
-    #     print(f"Best action: {best_action}")
-    #     obs, reward, done = env.step(best_action.action)
-    #     print(f"Observation: {obs}, Reward: {reward}")
-    #     node = node.child_nodes[best_action]
-    #     print(f"{node=}")
-    #     if done:
-    #         break
+    print(f"{node=}")
+    while True:
+        best_action = max(node.child_nodes, key=lambda x: node.child_nodes[x].value)
+        print(f"Best action: {best_action}")
+        obs, reward, done = env.step(best_action.action)
+        print(f"Observation: {obs}, Reward: {reward}")
+        node = node.child_nodes[best_action]
+        print(f"{node=}")
+        if done:
+            break
 
 
 if __name__ == "__main__":
