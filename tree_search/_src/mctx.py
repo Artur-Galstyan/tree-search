@@ -1,3 +1,4 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from beartype.typing import Any, Callable, NamedTuple
@@ -9,7 +10,13 @@ UNVISITED = -1
 ROOT_INDEX = 0
 
 
-class Tree(NamedTuple):
+def apply_updates(tree: PyTree, updates) -> PyTree:
+    for accessor, update in updates:
+        tree = eqx.tree_at(accessor, tree, update)
+    return tree
+
+
+class Tree(eqx.Module):
     # Tree Navigation
     parent_indices: Int[Array, "n_nodes"]
     children_indices: Int[Array, "n_nodes n_actions"]
@@ -45,6 +52,23 @@ class ActionSelectionReturn(NamedTuple):
 
 class SelectionOutput(NamedTuple):
     parent_index: Int[Array, ""]
+    action: Int[Array, ""]
+
+
+class StepFnInput(NamedTuple):
+    embedding: Any
+    action: Int[Array, ""]
+
+
+class StepFnReturn(NamedTuple):
+    value: Float[Array, ""]
+    discount: Float[Array, ""]
+    reward: Float[Array, ""]
+    embedding: Any
+
+
+class ExpansionOutput(NamedTuple):
+    node_index: Int[Array, ""]
     action: Int[Array, ""]
 
 
@@ -127,3 +151,106 @@ def selection(
         parent_index=final_state.node_index,
         action=final_state.action,
     )
+
+
+def expansion(
+    tree: Tree,
+    parent_index: Int[Array, ""],
+    action: Int[Array, ""],
+    next_node_index: Int[Array, ""],
+    step_fn: Callable[[StepFnInput], StepFnReturn],
+) -> ExpansionOutput:
+    embedding = tree.embeddings[parent_index]
+    value, discount, reward, next_state = step_fn(
+        StepFnInput(embedding=embedding, action=action)
+    )
+
+    new_children_indices = tree.children_indices.at[parent_index, action].set(
+        next_node_index
+    )
+    new_action_from_parent = tree.action_from_parent.at[next_node_index].set(action)
+    new_parent_indices = tree.parent_indices.at[next_node_index].set(parent_index)
+    new_node_values = tree.node_values.at[next_node_index].set(value)
+    new_node_visits = tree.node_visits.at[next_node_index].set(1)
+    new_node_discounts = tree.children_discounts.at[parent_index, action].set(discount)
+    new_node_rewards = tree.children_rewards.at[parent_index, action].set(reward)
+    new_node_embeddings = tree.embeddings.at[next_node_index].set(next_state.embedding)
+
+    updates = [
+        (lambda t: t.children_indices),
+        new_children_indices,
+        (lambda t: t.action_from_parent),
+        new_action_from_parent,
+        (lambda t: t.parent_indices),
+        new_parent_indices,
+        (lambda t: t.node_values),
+        new_node_values,
+        (lambda t: t.node_visits),
+        new_node_visits,
+        (lambda t: t.children_discounts),
+        new_node_discounts,
+        (lambda t: t.children_rewards),
+        new_node_rewards,
+        (lambda t: t.embeddings),
+        new_node_embeddings,
+    ]
+
+    tree = apply_updates(tree, updates)
+
+    return ExpansionOutput(
+        node_index=next_node_index,
+        action=action,
+    )
+
+
+def backpropagate(tree: Tree, leaf_index: Int[Array, ""]) -> Tree:
+    class BackpropagationState(NamedTuple):
+        tree: Tree
+        idx: Int[Array, ""]
+        value: Float[Array, ""]
+
+    def _backpropagate(state: BackpropagationState) -> BackpropagationState:
+        tree, idx, value = state
+        parent = tree.parent_indices[idx]
+        action = tree.action_from_parent[idx]
+
+        reward = tree.children_rewards[parent, action]
+        discount = tree.children_discounts[parent, action]
+
+        parent_value = tree.node_values[parent]
+        parent_visits = tree.node_visits[parent]
+
+        leaf_value = reward + discount * state.value
+        parent_value = (parent_value * parent_visits + leaf_value) / (
+            parent_visits + 1.0
+        )
+
+        updates = [
+            (lambda t: t.node_values, tree.node_values.at[parent].set(parent_value)),
+            (
+                lambda t: t.node_visits,
+                tree.node_visits.at[parent].set(parent_visits + 1),
+            ),
+            (
+                lambda t: t.children_values,
+                tree.children_values.at[parent, action].set(tree.node_values[idx]),
+            ),
+            (
+                lambda t: t.children_visits,
+                tree.children_visits.at[parent, action].set(
+                    tree.children_visits[parent, action] + 1
+                ),
+            ),
+        ]
+
+        tree = apply_updates(tree, updates)
+        return BackpropagationState(idx=parent, value=leaf_value, tree=tree)
+
+    state = BackpropagationState(
+        idx=leaf_index, value=tree.node_values[leaf_index], tree=tree
+    )
+
+    state = jax.lax.while_loop(
+        lambda state: state.idx != ROOT_INDEX, _backpropagate, state
+    )
+    return state.tree
