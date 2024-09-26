@@ -2,7 +2,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from beartype.typing import Any, Callable, NamedTuple
-from jaxtyping import Array, Bool, Float, Int, PyTree
+from jaxtyping import Array, ArrayLike, Bool, Float, Int, PyTree
 
 
 NO_PARENT = -1
@@ -47,29 +47,29 @@ class ActionSelectionInput(NamedTuple):
 
 
 class ActionSelectionReturn(NamedTuple):
-    action: Int[Array, ""]
+    action: Int[ArrayLike, ""]
 
 
 class SelectionOutput(NamedTuple):
-    parent_index: Int[Array, ""]
-    action: Int[Array, ""]
+    parent_index: Int[ArrayLike, ""]
+    action: Int[ArrayLike, ""]
 
 
 class StepFnInput(NamedTuple):
     embedding: Any
-    action: Int[Array, ""]
+    action: Int[ArrayLike, ""]
 
 
 class StepFnReturn(NamedTuple):
-    value: Float[Array, ""]
-    discount: Float[Array, ""]
-    reward: Float[Array, ""]
+    value: Float[ArrayLike, ""]
+    discount: Float[ArrayLike, ""]
+    reward: Float[ArrayLike, ""]
     embedding: Any
 
 
 class ExpansionOutput(NamedTuple):
-    node_index: Int[Array, ""]
-    action: Int[Array, ""]
+    node_index: Int[ArrayLike, ""]
+    action: Int[ArrayLike, ""]
 
 
 def generate_tree(n_nodes: int, n_actions: int, root_fn_output: RootFnOutput) -> Tree:
@@ -155,9 +155,9 @@ def selection(
 
 def expansion(
     tree: Tree,
-    parent_index: Int[Array, ""],
-    action: Int[Array, ""],
-    next_node_index: Int[Array, ""],
+    parent_index: Int[ArrayLike, ""],
+    action: Int[ArrayLike, ""],
+    next_node_index: Int[ArrayLike, ""],
     step_fn: Callable[[StepFnInput], StepFnReturn],
 ) -> ExpansionOutput:
     embedding = tree.embeddings[parent_index]
@@ -203,11 +203,11 @@ def expansion(
     )
 
 
-def backpropagate(tree: Tree, leaf_index: Int[Array, ""]) -> Tree:
+def backpropagate(tree: Tree, leaf_index: Int[ArrayLike, ""]) -> Tree:
     class BackpropagationState(NamedTuple):
         tree: Tree
-        idx: Int[Array, ""]
-        value: Float[Array, ""]
+        idx: Int[ArrayLike, ""]
+        value: Float[ArrayLike, ""]
 
     def _backpropagate(state: BackpropagationState) -> BackpropagationState:
         tree, idx, value = state
@@ -254,3 +254,42 @@ def backpropagate(tree: Tree, leaf_index: Int[Array, ""]) -> Tree:
         lambda state: state.idx != ROOT_INDEX, _backpropagate, state
     )
     return state.tree
+
+
+class MCTX:
+    @staticmethod
+    def search(
+        max_depth: int,
+        n_actions: int,
+        root_fn: Callable[[], RootFnOutput],
+        inner_action_selection_fn: Callable[
+            [ActionSelectionInput], ActionSelectionReturn
+        ],
+        step_fn: Callable[[StepFnInput], StepFnReturn],
+        n_iterations: int,
+    ):
+        node_index_counter = 0
+        tree = generate_tree(n_nodes=4, n_actions=n_actions, root_fn_output=root_fn())
+        for _ in range(n_iterations):
+            selection_output = selection(
+                tree=tree,
+                max_depth=max_depth,
+                inner_action_selection_fn=inner_action_selection_fn,
+            )
+
+            if (
+                tree.children_indices[
+                    selection_output.parent_index, selection_output.action
+                ]
+                == UNVISITED
+            ):
+                node_index_counter += 1
+
+            expansion_output = expansion(
+                tree=tree,
+                parent_index=selection_output.parent_index,
+                action=selection_output.action,
+                next_node_index=jnp.array(node_index_counter),
+                step_fn=step_fn,
+            )
+            backpropagate(tree=tree, leaf_index=expansion_output.node_index)
